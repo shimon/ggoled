@@ -8,6 +8,8 @@ use ggoled_lib::Device;
 use spin_sleep::sleep;
 use std::sync::Arc;
 use std::time::Instant;
+mod watch;
+
 use std::{
     io::{Read, stdin},
     ops::Div,
@@ -156,6 +158,47 @@ enum Args {
         value: u8,
     },
 
+    #[command(
+        about = "Watch headset connection state, running hooks on changes",
+        long_about = "Watch headset connection state, running hooks on changes.
+
+Runs until killed, printing the state as a JSON line on stdout whenever it changes. \
+Can run alongside ggoled_app (tested on Linux).",
+        after_long_help = r#"Output:
+  One JSON object per line, e.g.:
+    {"time":1792016123,"base_station":true,"wireless":true,"bluetooth":false,"bluetooth_on":true,"battery":6,"charging":1}
+
+  time          Unix timestamp (seconds) of the report
+  base_station  Whether the base station is connected over USB
+  wireless      Whether the headset is connected to the base station
+  bluetooth     Whether a Bluetooth device is connected
+  bluetooth_on  Whether Bluetooth is enabled
+  battery       Headset battery level, 0-8 (raw device value)
+  charging      Charging state (raw device value; meaning not fully known)
+
+  Fields that haven't been reported by the device yet are null.
+
+Hooks:
+  Hooks run via `sh -c` (`cmd /C` on Windows) only when `wireless` changes, and
+  once on startup for the initial state unless --no-initial-hook is given.
+  Battery changes produce output but don't run hooks. If the base station is
+  unplugged, the headset is treated as disconnected.
+
+  Hooks receive the new state in environment variables:
+    GGOLED_BASE_STATION, GGOLED_WIRELESS, GGOLED_BLUETOOTH  "true" / "false"
+    GGOLED_BATTERY, GGOLED_CHARGING                         number, or empty if unknown
+
+  The state file is not removed when ggoled exits.
+
+Example (Linux, switch default audio output):
+  ggoled watch \
+    --on-connect 'pactl set-default-sink alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo' \
+    --on-disconnect 'pactl set-default-sink <your speakers sink>'
+
+  List sink names with `pactl list short sinks`."#
+    )]
+    Watch(watch::WatchArgs),
+
     #[command(about = "Print version")]
     Version,
 
@@ -173,6 +216,9 @@ fn main() {
         return;
     } else if let Args::DumpDevices = args {
         Device::dump_devices();
+        return;
+    } else if let Args::Watch(watch_args) = args {
+        watch::watch(watch_args);
         return;
     }
 
@@ -307,7 +353,7 @@ fn main() {
             dev.set_brightness(value).unwrap();
         }
         // handled above
-        Args::Version | Args::DumpDevices => {}
+        Args::Version | Args::DumpDevices | Args::Watch(_) => {}
         Args::Probe => {
             dev.probe().unwrap();
             loop {

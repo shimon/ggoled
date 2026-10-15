@@ -419,6 +419,16 @@ impl Device {
         Ok(self.parse_event(&buf))
     }
 
+    /// Poll events from the device, waiting at most `timeout`. Returns an empty list on timeout.
+    pub fn poll_event_timeout(&self, timeout: Duration) -> anyhow::Result<Vec<DeviceEvent>> {
+        let mut buf = [0u8; 64];
+        let len = self.dev.info().read_timeout(&mut buf, timeout.as_millis() as i32)?;
+        if len == 0 {
+            return Ok(vec![]);
+        }
+        Ok(self.parse_event(&buf))
+    }
+
     /// Return any pending events from the device. Non-blocking.
     pub fn get_events(&self) -> anyhow::Result<Vec<DeviceEvent>> {
         self.dev.info().set_blocking_mode(false)?;

@@ -78,6 +78,25 @@ ggoled anim -r 20 frames/*  # bash
 ggoled anim -r 20 $(Get-ChildItem frames | % { $_.FullName })  # powershell
 ```
 
+### Watching headset connection
+
+`ggoled watch` monitors the headset's connection to the base station and prints a JSON line whenever the state (connection, battery) changes.
+It can run commands when the headset connects or disconnects, and write the current state to a file for use by status bars or other scripts.
+It can run alongside the desktop application.
+
+For example, to switch the default audio output to the headset when it connects (Linux with PipeWire/PulseAudio, see `pactl list short sinks` for sink names):
+
+```sh
+ggoled watch \
+  --state-file "$XDG_RUNTIME_DIR/ggoled/state.json" \
+  --on-connect 'pactl set-default-sink alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo' \
+  --on-disconnect 'pactl set-default-sink YOUR_SPEAKERS_SINK'
+```
+
+Hooks run on startup to match the initial state, unless `--no-initial-hook` is given.
+They also receive the state as `GGOLED_WIRELESS`, `GGOLED_BLUETOOTH`, `GGOLED_BATTERY`, `GGOLED_CHARGING` and `GGOLED_BASE_STATION` environment variables.
+State changes are debounced (`--debounce`, 1500 ms by default) so brief dropouts don't trigger hooks.
+
 ## Desktop application
 
 The application puts itself as an icon in the system tray that you can right-click to configure.
