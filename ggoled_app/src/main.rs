@@ -1,10 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod hooks;
+mod hooks_window;
 mod os;
 
 use chrono::{DateTime, Local, TimeDelta, Timelike};
 use ggoled_draw::{DrawDevice, DrawEvent, LayerId, ShiftMode, TextRenderer, bitmap_from_memory};
 use ggoled_lib::{Bitmap, Device};
+use hooks::{HookKind, HooksConfig};
 use os::{Media, OSFeatures, OSImpl};
 use rfd::{MessageDialog, MessageLevel};
 use sdl3_sys::everything as sdl;
@@ -14,6 +17,7 @@ use std::{
     fmt::Debug,
     os::raw::c_void,
     path::PathBuf,
+    process::Child,
     sync::{Arc, mpsc},
     thread::sleep,
     time::{Duration, Instant},
@@ -79,6 +83,7 @@ struct Config {
     oled_shift: ConfigShiftMode,
     status_notify: StatusNotifyMode,
     quit_mode: ConfigQuitMode,
+    hooks: HooksConfig,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -90,6 +95,7 @@ impl Default for Config {
             oled_shift: ConfigShiftMode::default(),
             status_notify: StatusNotifyMode::default(),
             quit_mode: ConfigQuitMode::default(),
+            hooks: HooksConfig::default(),
         }
     }
 }
@@ -190,6 +196,7 @@ enum MenuEvent {
     SetShiftMode(ConfigShiftMode),
     SetStatusNotifyMode(StatusNotifyMode),
     SetQuitMode(ConfigQuitMode),
+    OpenHooks,
     Quit,
 }
 
@@ -231,7 +238,29 @@ impl<T: Copy + PartialEq> RadioMenu<T> {
     }
 }
 
+// Hooks are edited by the hooks window process, so always read them fresh from disk
+fn trigger_hook(kind: HookKind) {
+    hooks::trigger(kind, &Config::load().hooks);
+}
+
+// Launch the hooks window as a separate process, unless it's already open
+fn open_hooks_window(window: &mut Option<Child>) {
+    if let Some(child) = window
+        && matches!(child.try_wait(), Ok(None))
+    {
+        return;
+    }
+    *window = Some(dialog_unwrap(
+        std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg("--hooks").spawn()),
+    ));
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--hooks") {
+        dialog_unwrap(hooks_window::run_window());
+        return;
+    }
+
     // Initial loading
     let mut config = Config::load();
     let mut os = OSImpl::new();
@@ -329,6 +358,9 @@ fn main() {
         MenuEvent::SetQuitMode,
     );
 
+    let tm_hooks = unsafe { sdl::SDL_InsertTrayEntryAt(menu, -1, c"Hooks…".as_ptr(), sdl::SDL_TRAYENTRY_BUTTON) };
+    bind_menu_event(tm_hooks, &menu_tx, MenuEvent::OpenHooks);
+
     unsafe { sdl::SDL_InsertTrayEntryAt(menu, -1, std::ptr::null(), sdl::SDL_TRAYENTRY_BUTTON) }; // separator
     let tm_quit = unsafe { sdl::SDL_InsertTrayEntryAt(menu, -1, c"Quit".as_ptr(), sdl::SDL_TRAYENTRY_BUTTON) };
     bind_menu_event(tm_quit, &menu_tx, MenuEvent::Quit);
@@ -378,6 +410,7 @@ fn main() {
     let mut notif_layer: Option<LayerId> = None;
     let mut notif_expiry = Local::now();
     let mut is_connected = false;
+    let mut hooks_window: Option<Child> = None;
 
     // Wait for connect
     let mut last_connect = Instant::now() - Duration::from_secs(1);
@@ -389,8 +422,10 @@ fn main() {
             }
         }
         while let Ok(event) = menu_rx.try_recv() {
-            if matches!(event, MenuEvent::Quit) {
-                return;
+            match event {
+                MenuEvent::Quit => return,
+                MenuEvent::OpenHooks => open_hooks_window(&mut hooks_window),
+                _ => {}
             }
         }
         if last_connect.elapsed() >= Duration::from_secs(1) {
@@ -402,6 +437,7 @@ fn main() {
         sleep(Duration::from_millis(10));
     };
     unsafe { sdl::SDL_SetTrayIcon(tray, icon.surf) };
+    trigger_hook(HookKind::BaseStationConnect);
     let mut dev = DrawDevice::new(dev, 30);
     if let Some(font) = &config.font {
         dev.texter = dialog_unwrap(TextRenderer::load_from_file(&font.path, font.size));
@@ -453,10 +489,12 @@ fn main() {
                     config.quit_mode = mode;
                     tm_quit_mode_radio.update_checked(mode);
                 }
+                MenuEvent::OpenHooks => open_hooks_window(&mut hooks_window),
                 MenuEvent::Quit => break 'main,
             }
         }
         if config_updated {
+            config.hooks = Config::load().hooks; // don't overwrite changes from the hooks window
             dialog_unwrap(config.save());
         }
 
@@ -467,9 +505,18 @@ fn main() {
             #[cfg(debug_assertions)]
             println!("event: {:?}", event);
             match event {
-                DrawEvent::DeviceDisconnected => unsafe { sdl::SDL_SetTrayIcon(tray, icon_error.surf) },
+                DrawEvent::DeviceDisconnected => {
+                    unsafe { sdl::SDL_SetTrayIcon(tray, icon_error.surf) };
+                    trigger_hook(HookKind::BaseStationDisconnect);
+                    // The headset can't stay connected without its base station
+                    if is_connected {
+                        is_connected = false;
+                        trigger_hook(HookKind::HeadsetDisconnect);
+                    }
+                }
                 DrawEvent::DeviceReconnected => {
                     unsafe { sdl::SDL_SetTrayIcon(tray, icon.surf) }
+                    trigger_hook(HookKind::BaseStationConnect);
                     dev.probe(); // re-probe when base station reappears
                 }
                 #[allow(clippy::single_match)]
@@ -477,6 +524,11 @@ fn main() {
                     ggoled_lib::DeviceEvent::HeadsetConnection { wireless, .. } => {
                         if wireless != is_connected {
                             is_connected = wireless;
+                            trigger_hook(if is_connected {
+                                HookKind::HeadsetConnect
+                            } else {
+                                HookKind::HeadsetDisconnect
+                            });
                             notif_expiry = Local::now() + NOTIF_DUR;
                             notif_update(
                                 &mut dev,

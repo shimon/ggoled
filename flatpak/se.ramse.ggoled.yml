@@ -11,6 +11,8 @@ finish-args:
   - --device=all
   # System tray
   - --talk-name=org.kde.StatusNotifierWatcher
+  # Hook notifications
+  - --talk-name=org.freedesktop.Notifications
   # MPRIS
   - --talk-name=org.mpris.MediaPlayer2.*
   # Display

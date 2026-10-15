@@ -87,6 +87,16 @@ For Windows, it gets media information from the Windows API which makes it work 
 There are also features to avoid OLED burn-in that is otherwise unavoidable when using the official software, such as the screensaver function which will turn off the OLED display when away from the computer, or the OLED shifter which will infrequently move things around slightly.
 To extend the lifespan of your display, both of these are strongly recommended to use, along with using a low screen brightness.
 
+### Hooks
+
+The "Hooks…" tray menu item opens a window where you can set shell commands to run when the headset or base station connects or disconnects,
+for example to switch the default audio device (`pactl set-default-sink ...` on Linux).
+Each hook can be enabled or disabled, and run with "Test" to check that it works.
+A notification is shown when a hook fails, and optionally every time it runs.
+Commands receive the event name (e.g. `headset_connect`) in the `GGOLED_EVENT` environment variable.
+
+When running as a Flatpak, commands run inside the sandbox; to run them on the host, use `flatpak-spawn --host <command>` after granting access with `flatpak override --user --talk-name=org.freedesktop.Flatpak se.ramse.ggoled`.
+
 ### systemd service
 
 ```sh

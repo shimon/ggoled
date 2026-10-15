@@ -13,7 +13,14 @@ ggoled_draw = { path = "../ggoled_draw" }
 anyhow = "1"
 chrono = "0.4"
 directories = "6"
+eframe = { version = "0.37", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
 image = "0.25"
+notify-rust = { version = "4", default-features = false, features = ["d"] }
 rfd = "0.17"
 sdl3-sys = { version = "0.6" }
 serde = { version = "1", features = ["derive"] }
