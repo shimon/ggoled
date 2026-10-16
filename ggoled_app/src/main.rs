@@ -7,7 +7,7 @@ mod os;
 use chrono::{DateTime, Local, TimeDelta, Timelike};
 use ggoled_draw::{DrawDevice, DrawEvent, LayerId, ShiftMode, TextRenderer, bitmap_from_memory};
 use ggoled_lib::{Bitmap, Device};
-use hooks::{HookKind, HooksConfig};
+use hooks::{Debouncer, HookKind, HooksConfig};
 use os::{Media, OSFeatures, OSImpl};
 use rfd::{MessageDialog, MessageLevel};
 use sdl3_sys::everything as sdl;
@@ -410,6 +410,8 @@ fn main() {
     let mut notif_layer: Option<LayerId> = None;
     let mut notif_expiry = Local::now();
     let mut is_connected = false;
+    let mut headset_hooks = Debouncer::new(false);
+    let mut base_hooks = Debouncer::new(false);
     let mut hooks_window: Option<Child> = None;
 
     // Wait for connect
@@ -437,7 +439,7 @@ fn main() {
         sleep(Duration::from_millis(10));
     };
     unsafe { sdl::SDL_SetTrayIcon(tray, icon.surf) };
-    trigger_hook(HookKind::BaseStationConnect);
+    let mut base_connected = true;
     let mut dev = DrawDevice::new(dev, 30);
     if let Some(font) = &config.font {
         dev.texter = dialog_unwrap(TextRenderer::load_from_file(&font.path, font.size));
@@ -507,16 +509,13 @@ fn main() {
             match event {
                 DrawEvent::DeviceDisconnected => {
                     unsafe { sdl::SDL_SetTrayIcon(tray, icon_error.surf) };
-                    trigger_hook(HookKind::BaseStationDisconnect);
+                    base_connected = false;
                     // The headset can't stay connected without its base station
-                    if is_connected {
-                        is_connected = false;
-                        trigger_hook(HookKind::HeadsetDisconnect);
-                    }
+                    is_connected = false;
                 }
                 DrawEvent::DeviceReconnected => {
                     unsafe { sdl::SDL_SetTrayIcon(tray, icon.surf) }
-                    trigger_hook(HookKind::BaseStationConnect);
+                    base_connected = true;
                     dev.probe(); // re-probe when base station reappears
                 }
                 #[allow(clippy::single_match)]
@@ -524,11 +523,6 @@ fn main() {
                     ggoled_lib::DeviceEvent::HeadsetConnection { wireless, .. } => {
                         if wireless != is_connected {
                             is_connected = wireless;
-                            trigger_hook(if is_connected {
-                                HookKind::HeadsetConnect
-                            } else {
-                                HookKind::HeadsetDisconnect
-                            });
                             notif_expiry = Local::now() + NOTIF_DUR;
                             notif_update(
                                 &mut dev,
@@ -543,6 +537,24 @@ fn main() {
                     _ => {}
                 },
             }
+        }
+
+        // Run hooks once connection changes have settled
+        let now = Instant::now();
+        let hooks_delay = || Duration::from_millis(Config::load().hooks.debounce_ms);
+        if let Some(connected) = base_hooks.update(base_connected, now, hooks_delay) {
+            trigger_hook(if connected {
+                HookKind::BaseStationConnect
+            } else {
+                HookKind::BaseStationDisconnect
+            });
+        }
+        if let Some(connected) = headset_hooks.update(is_connected, now, hooks_delay) {
+            trigger_hook(if connected {
+                HookKind::HeadsetConnect
+            } else {
+                HookKind::HeadsetDisconnect
+            });
         }
 
         // Update layers every second

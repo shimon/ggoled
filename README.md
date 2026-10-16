@@ -93,6 +93,7 @@ The "Hooks…" tray menu item opens a window where you can set shell commands to
 for example to switch the default audio device (`pactl set-default-sink ...` on Linux).
 Each hook can be enabled or disabled, and run with "Test" to check that it works.
 A notification is shown when a hook fails, and optionally every time it runs.
+Hooks only run once a change has lasted for the debounce period (1500 ms by default, configurable in the window), so brief dropouts don't trigger them.
 Commands receive the event name (e.g. `headset_connect`) in the `GGOLED_EVENT` environment variable.
 
 When running as a Flatpak, commands run inside the sandbox; to run them on the host, use `flatpak-spawn --host <command>` after granting access with `flatpak override --user --talk-name=org.freedesktop.Flatpak se.ramse.ggoled`.

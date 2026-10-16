@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::process::{Command, Stdio};
+use std::{
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+};
 
 const NOTIF_BODY_MAX: usize = 300;
 
@@ -20,13 +23,26 @@ impl Default for HookConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
 pub struct HooksConfig {
     pub headset_connect: HookConfig,
     pub headset_disconnect: HookConfig,
     pub base_station_connect: HookConfig,
     pub base_station_disconnect: HookConfig,
+    /// How long a connection change must persist before hooks run.
+    pub debounce_ms: u64,
+}
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self {
+            headset_connect: HookConfig::default(),
+            headset_disconnect: HookConfig::default(),
+            base_station_connect: HookConfig::default(),
+            base_station_disconnect: HookConfig::default(),
+            debounce_ms: 1500,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -159,17 +175,73 @@ pub fn trigger(kind: HookKind, hooks: &HooksConfig) {
     }
 }
 
-#[cfg(all(test, unix))]
+/// Reports a connection state once it has stayed changed for a delay, so brief dropouts don't run hooks.
+pub struct Debouncer {
+    reported: bool,
+    pending: Option<(Instant, Duration)>,
+}
+impl Debouncer {
+    pub fn new(initial: bool) -> Self {
+        Self {
+            reported: initial,
+            pending: None,
+        }
+    }
+
+    /// Returns the new state once it has settled. `delay` is only called when a change starts.
+    pub fn update(&mut self, value: bool, now: Instant, delay: impl FnOnce() -> Duration) -> Option<bool> {
+        if value == self.reported {
+            self.pending = None;
+            return None;
+        }
+        let (since, delay) = *self.pending.get_or_insert_with(|| (now, delay()));
+        if now.duration_since(since) < delay {
+            return None;
+        }
+        self.reported = value;
+        self.pending = None;
+        Some(value)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    const DELAY: Duration = Duration::from_millis(1500);
+
     #[test]
+    fn debounce_reports_after_delay() {
+        let t = Instant::now();
+        let mut d = Debouncer::new(false);
+        assert_eq!(d.update(true, t, || DELAY), None);
+        assert_eq!(d.update(true, t + Duration::from_millis(1000), || DELAY), None);
+        assert_eq!(d.update(true, t + DELAY, || DELAY), Some(true));
+        assert_eq!(d.update(true, t + DELAY * 2, || DELAY), None);
+        assert_eq!(d.update(false, t + DELAY * 2, || Duration::ZERO), Some(false));
+    }
+
+    #[test]
+    fn debounce_ignores_flaps() {
+        let t = Instant::now();
+        let mut d = Debouncer::new(true);
+        assert_eq!(d.update(false, t, || DELAY), None);
+        assert_eq!(d.update(true, t + Duration::from_secs(1), || DELAY), None);
+        // A new change restarts the delay
+        assert_eq!(d.update(false, t + Duration::from_secs(2), || DELAY), None);
+        assert_eq!(d.update(false, t + Duration::from_secs(3), || DELAY), None);
+        assert_eq!(d.update(false, t + Duration::from_secs(4), || DELAY), Some(false));
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn success_output() {
         let result = execute(HookKind::HeadsetConnect, "echo out; echo err >&2");
         assert_eq!(result, Ok("out\nerr".to_string()));
     }
 
     #[test]
+    #[cfg(unix)]
     fn failure_status() {
         let result = execute(HookKind::HeadsetConnect, "echo oops >&2; exit 3");
         assert_eq!(result, Err("Exited with status 3:\noops".to_string()));
@@ -178,6 +250,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn event_env() {
         let result = execute(HookKind::BaseStationDisconnect, "echo $GGOLED_EVENT");
         assert_eq!(result, Ok("base_station_disconnect".to_string()));
@@ -190,5 +263,6 @@ mod tests {
         assert!(!hooks.headset_connect.notify);
         assert_eq!(hooks.headset_connect.command, "true");
         assert!(hooks.base_station_connect == HookConfig::default());
+        assert_eq!(hooks.debounce_ms, 1500);
     }
 }

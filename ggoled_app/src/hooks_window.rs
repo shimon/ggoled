@@ -101,6 +101,19 @@ impl eframe::App for HooksApp {
                         }
                     }
                 }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Debounce");
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut self.hooks.debounce_ms)
+                                .range(0..=60_000)
+                                .speed(10)
+                                .suffix(" ms"),
+                        )
+                        .on_hover_text("How long a connection change must last before hooks run")
+                        .changed();
+                });
             });
         });
         if changed {
